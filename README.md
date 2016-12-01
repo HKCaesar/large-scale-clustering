@@ -1,2 +1,2 @@
 # image-clustering
-Image clustering.
+Image clustering. Data is not included.
