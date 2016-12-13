@@ -2,97 +2,105 @@ import numpy as np
 import math
 import collections
 
+''' CONSTANTS '''
 num_d_squared_centers = 20
+mapper_coreset_size = 1000 - num_d_squared_centers
 k = 200
-coreset_size = 1000 - num_d_squared_centers
 alpha = 16 * (math.log(k, 2) + 1)
-iterations = 30
+k_means_iterations = 30
 
 
+# key: None
+# value: 2d numpy array
 def mapper(key, value):
-    # key: None
-    # value: one line of input file
-    d_squared_centers = list()
-    d_squared_centers.append(value[np.random.randint(10000)])
+    centers = list()
+    centers.append(value[np.random.randint(10000)])
 
+    ''' D^2 sampling '''
+
+    # gets the squared distance to the nearest center from a vector
     def squared_distance_to_nearest_center(vec):
-        return distance_to_nearest_center(vec, d_squared_centers)**2
+        return get_distance_to_nearest_center(vec, centers) ** 2
 
-    #print("getting D^2 centers")
     for i in xrange(num_d_squared_centers - 1):
-        #print("getting the " + str(i) + " center")
         distances = np.apply_along_axis(squared_distance_to_nearest_center, 1, value)
         next_center_idx = np.random.choice(10000, p=(distances / np.sum(distances)))
-        d_squared_centers.append(value[next_center_idx])
+        centers.append(value[next_center_idx])
 
-    '''print(len(centers))
-    print(str(centers))
-    print(type(centers))'''
+    ''' significance sampling '''
 
-    # now we do significance sampling
-
+    # sum of distances from each point to its nearest D^2 center
     distances_sum = np.sum(np.apply_along_axis(squared_distance_to_nearest_center, 1, value))
+    # map from each center to a list of the distances of the points that are closest to that center
+    centers_to_dists = get_centers_to_nearest_point_squared_dists(value, centers)
 
-    # get a map from (center -> list(vector))
-
-    def vec_to_nearest_center_and_squared_distance_tuple(vec):
-        min_dist = np.iinfo(np.int32).max
-        ret_center = None
-        for center in d_squared_centers:
-            dist = np.linalg.norm(vec - center)
-            if dist < min_dist:
-                min_dist = dist
-                ret_center = center
-
-        return ret_center, min_dist**2
-
-    def centers_to_nearest_point_dists():
-        ret = collections.defaultdict(list)
-        for j in range(value.shape[0]):
-            #print("looking at " + str(j))
-            center, dist = vec_to_nearest_center_and_squared_distance_tuple(value[j])
-            ret[center.tostring()].append(dist)
-
-        '''for center, dist in tuples:
-            #print("looking at dist " + str(dist))
-            ret[str(center)].append(dist)'''
-
-        return ret
-
-    #print("getting centers to dists")
-    centers_to_dists = centers_to_nearest_point_dists()
-    #print("size: " + str(len(centers_to_dists.keys())))
-
+    # get the probability of sampling the specified vector
     def significance_sampling_prob(vec):
-        c = (1.0 / 10000.0) * distances_sum
-        nearest_center, squared_dist_to_nearest_center = vec_to_nearest_center_and_squared_distance_tuple(vec)
+        # c_phi value
+        ave_nearest_dist = (1.0 / value.shape[0]) * distances_sum
+        nearest_center, squared_dist_to_nearest_center = get_nearest_center_and_squared_dist_tuple(vec, centers)
+        # B_i, the list of all the distances to the nearest center
         dists_to_nearest_center = centers_to_dists[nearest_center.tostring()]
 
-        first_term = alpha * squared_dist_to_nearest_center / c
-        #print("first term: " + str(first_term))
-        second_term = 2.0 * alpha * sum(dists_to_nearest_center) / (len(dists_to_nearest_center) * c)
-        #print("second term: " + str(second_term))
-        third_term = 4.0 * 10000.0 / len(dists_to_nearest_center)
-        #print("third term: " + str(third_term))
+        # (alpha * d(x, B)^2) / c_phi
+        first_term = alpha * squared_dist_to_nearest_center / ave_nearest_dist
+        # (2 * alpha summation(all x' in X: d(x', B)^2)) / (size(B_i) * c_phi)
+        second_term = 2.0 * alpha * sum(dists_to_nearest_center) / (len(dists_to_nearest_center) * ave_nearest_dist)
+        # 4 * size(X) / size(B_i)
+        third_term = 4.0 * value.shape[0] / len(dists_to_nearest_center)
 
         return first_term + second_term + third_term
 
-    #print('getting significance sampling prob')
-    #print(str(significance_sampling_prob(value[0])))
+    # the significance sampling values for all the vectors in value
+    sig_sampling_vals = np.apply_along_axis(significance_sampling_prob, 1, value)
+    sig_sampling_probs = sig_sampling_vals / np.sum(sig_sampling_vals)
+    sig_sampled_indices = np.random.choice(value.shape[0], size=mapper_coreset_size, p=sig_sampling_probs)
 
-    #print("sampling for other vectors")
-    probs = np.apply_along_axis(significance_sampling_prob, 1, value)
-    sampled_indices = np.random.choice(10000, size=coreset_size, p=(probs / np.sum(probs)))
+    # add all the vectors that we sampled to the centers list
+    for index in sig_sampled_indices:
+        centers.append(value[index])
 
-    #print("adding sampled vectors to return list")
-    for index in sampled_indices:
-        d_squared_centers.append(value[index])
-
-
-    yield 0, d_squared_centers  # this is how you yield a key, value pair
+    yield 0, centers
 
 
-def distance_to_nearest_center(vec, centers):
+# key: key from mapper used to aggregate
+# values: list of all value for that key
+# Note that we do *not* output a (key, value) pair here.
+def reducer(key, values):
+    centers = list()
+    center_indices = np.random.choice(len(values), k)
+
+    for idx in center_indices:
+        centers.append(values[idx])
+
+    for _ in range(1, k_means_iterations + 1):
+        centers_to_indices = get_centers_to_nearest_point_indices(values, centers)
+        new_centers = list()
+
+        for center in centers_to_indices.keys():
+            vec_sum = np.zeros(250)
+            for idx in centers_to_indices[center]:
+                vec_sum = vec_sum + values[idx]
+
+            mean_vec = vec_sum / len(centers_to_indices[center])
+            new_centers.append(mean_vec)
+
+        # in the case that some centers we picked were outliers
+        if len(new_centers) < k:
+            for _ in xrange(k - len(new_centers)):
+                new_centers.append(values[np.random.randint(values.shape[0])])
+
+        centers = new_centers
+
+    yield centers
+
+
+''' helper functions '''
+
+
+# Given a vector and a list of vectors that are the current centers, return
+# the distance to the closest center.
+def get_distance_to_nearest_center(vec, centers):
     min_dist = np.iinfo(np.int32).max
     for center in centers:
         dist = np.linalg.norm(vec - center)
@@ -102,74 +110,53 @@ def distance_to_nearest_center(vec, centers):
     return min_dist
 
 
-def reducer(key, values):
-    # key: key from mapper used to aggregate
-    # values: list of all value for that key
-    # Note that we do *not* output a (key, value) pair here.
-    #print("in mapper")
+# Given a 2d numpy array and a list of vectors that are the current centers, return a map
+# from each center to a list of scalars that represents the distances to the points in arr2d
+# closest to that center.
+def get_centers_to_nearest_point_squared_dists(arr2d, centers):
+    ret = collections.defaultdict(list)
+    for i in range(arr2d.shape[0]):
+        center, dist = get_nearest_center_and_squared_dist_tuple(arr2d[i], centers)
+        ret[center.tostring()].append(dist)
 
-    # time to do k-means
-
-    centers = list()
-    center_indices = np.random.choice(len(values), k)
-
-    for idx in center_indices:
-        centers.append(values[idx])
-
-    #print("original centers length " + str(len(centers)))
-
-    def vec_to_nearest_center(vec):
-        min_dist = np.iinfo(np.int32).max
-        ret_center = None
-        for cntr in centers:
-            dist = np.linalg.norm(vec - cntr)
-            if dist < min_dist:
-                min_dist = dist
-                ret_center = cntr
-
-        return ret_center
+    return ret
 
 
-    def centers_to_nearest_point_index():
-        ret = collections.defaultdict(list)
-        for j in range(values.shape[0]):
-            #print("looking at " + str(j))
-            cntr = vec_to_nearest_center(values[j])
-            ret[cntr.tostring()].append(j)
+# Given a vector and a list of vectors that are the current centers, return the center
+# that is closest to the specified vector.
+def vec_to_nearest_center(vec, centers):
+    min_dist = np.iinfo(np.int32).max
+    nearest_center = None
+    for center in centers:
+        dist = np.linalg.norm(vec - center)
+        if dist < min_dist:
+            min_dist = dist
+            nearest_center = center
 
-        '''for center, dist in tuples:
-            #print("looking at dist " + str(dist))
-            ret[str(center)].append(dist)'''
-
-        return ret
-
-    for i in range(1, iterations + 1):
-        #print("on iteration " + str(i))
-        #print("getting centers to dists")
-        centers_to_indices = centers_to_nearest_point_index()
-        #print("centers_to_indices length " + str(len(centers_to_indices.keys())))
-
-        x = 0
-        for value in centers_to_indices.itervalues():
-            x = x + len(value)
-
-        #print("num values " + str(x))
+    return nearest_center
 
 
-        new_centers = list()
-        for center in centers_to_indices.keys():
-            sum = np.zeros(250)
-            for idx in centers_to_indices[center]:
-                sum = sum + values[idx]
+# Given a 2d numpy array and a list of vectors that are the current centers, return a
+# map from each center to a list of indices that represents the indices of the vectors
+# arr2d closest to that center.
+def get_centers_to_nearest_point_indices(arr2d, centers):
+    ret = collections.defaultdict(list)
+    for j in range(arr2d.shape[0]):
+        curr_center = vec_to_nearest_center(arr2d[j], centers)
+        ret[curr_center.tostring()].append(j)
 
-            mean_vec = sum / len(centers_to_indices[center])
-            new_centers.append(mean_vec)
+    return ret
 
-        if len(new_centers) < k:
-            for _ in xrange(k - len(new_centers)):
-                new_centers.append(values[np.random.randint(values.shape[0])])
 
-        centers = new_centers
+# Given a vector and a list of vectors that are the current centers, return a tuple
+# of (nearest_center, squared_min_dist).
+def get_nearest_center_and_squared_dist_tuple(vec, centers):
+    min_dist = np.iinfo(np.int32).max
+    ret_center = None
+    for center in centers:
+        dist = np.linalg.norm(vec - center)
+        if dist < min_dist:
+            min_dist = dist
+            ret_center = center
 
-    #print(len(centers))
-    yield centers
+    return ret_center, min_dist**2
