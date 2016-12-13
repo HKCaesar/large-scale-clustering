@@ -4,7 +4,7 @@ import collections
 
 ''' CONSTANTS '''
 num_d_squared_centers = 30
-mapper_coreset_size = 2000 - num_d_squared_centers
+mapper_coreset_size = 4000 - num_d_squared_centers
 k = 200
 alpha = 20 * (math.log(k, 2) + 1)
 k_means_iterations = 15
