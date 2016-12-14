@@ -1,2 +1,3 @@
 # image-clustering
-Image clustering. Data is not included.
+
+Image clustering using k-means and coresets in MapReduce.
