@@ -3,7 +3,7 @@ import math
 import collections
 
 ''' CONSTANTS '''
-num_d_squared_centers = 30
+num_d_squared_centers = 40
 mapper_coreset_size = 4000 - num_d_squared_centers
 k = 200
 alpha = 20 * (math.log(k, 2) + 1)
@@ -14,21 +14,31 @@ k_means_iterations = 15
 # value: 2d numpy array
 def mapper(key, value):
     centers = list()
-    centers.append(value[np.random.randint(value.shape[0])])
 
     ''' D^2 sampling '''
 
-    # gets the squared distance to the nearest center from a given vector
-    def squared_distance_to_nearest_center(vec):
-        return get_distance_to_nearest_center(vec, centers) ** 2
+    curr_center = value[np.random.randint(value.shape[0])]
+    centers.append(curr_center)
+
+    # initialization of minimum squared distances
+    min_squared_distances = np.full(value.shape[0], np.iinfo(np.int64).max)
+
+    # gets the squared distance to the current center from a specified vector
+    def get_squared_dist_to_curr_center(vec):
+        return np.linalg.norm(vec - curr_center)**2
 
     # generate the centers
-    for i in xrange(num_d_squared_centers - 1):
-        squared_distances = np.apply_along_axis(squared_distance_to_nearest_center, 1, value)
-        next_center_idx = np.random.choice(value.shape[0], p=(squared_distances / np.sum(squared_distances)))
+    for _ in xrange(num_d_squared_centers - 1):
+        min_squared_distances = np.minimum(np.apply_along_axis(get_squared_dist_to_curr_center, 1, value), min_squared_distances)
+        next_center_idx = np.random.choice(value.shape[0], p=(min_squared_distances / np.sum(min_squared_distances)))
         centers.append(value[next_center_idx])
+        curr_center = value[next_center_idx]
 
     ''' significance sampling '''
+
+    # gets the squared distance to the nearest center from a given vector
+    def squared_distance_to_nearest_center(vec):
+        return get_distance_to_nearest_center(vec, centers)**2
 
     # sum of distances from each point to its nearest D^2 center
     distances_sum = np.sum(np.apply_along_axis(squared_distance_to_nearest_center, 1, value))
@@ -102,7 +112,7 @@ def reducer(key, values):
 # Given a vector and a list of vectors that are the current centers, return
 # the distance to the closest center.
 def get_distance_to_nearest_center(vec, centers):
-    min_dist = np.iinfo(np.int32).max
+    min_dist = np.iinfo(np.int64).max
     for center in centers:
         dist = np.linalg.norm(vec - center)
     if dist < min_dist:
